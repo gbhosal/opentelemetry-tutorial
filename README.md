@@ -11,6 +11,8 @@ This stack is for a laptop demo. It uses filesystem storage, anonymous Grafana a
 | [observability](observability/README.md) | Grafana, Loki, Tempo, and Mimir |
 | [services](services/README.md) | Order, Payment, PostgreSQL, and the Collector |
 | [docs](docs/otel-newrelic-grafana-migration-strategy.md) | Observability strategy notes |
+| [docs](docs/otel-overview.md) | OpenTelemetry overview and architecture |
+| [docs](docs/otel-faq.md) | OpenTelemetry FAQ |
 
 The service guide describes the REST APIs, payment latency, and the spans inside one order. The observability guide describes the backend ports and readiness checks.
 

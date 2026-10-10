@@ -123,6 +123,67 @@ flowchart TD
 
 On a decline, `POST /orders`, the client call, and `POST /payments` have error status. The SQL spans stay successful because the `FAILED` and `DECLINED` rows were written.
 
+## Metrics in Mimir
+
+These are the metrics the two Java agents exported and Mimir stored. The service name is the `job` label, `order-service` or `payment-service`. A histogram is three series: `_bucket`, `_count`, and `_sum`.
+
+Tempo writes a separate set from the traces it receives: `traces_spanmetrics_*` and `traces_service_graph_*`. Those series use the label `service` rather than `job`. The dashboard's service-graph and SQL-latency panels read them. They are not in the tables below.
+
+### HTTP
+
+| Metric | Type | Unit | Seen on | Description |
+| --- | --- | --- | --- | --- |
+| `http_server_request_duration` | histogram | seconds | both | Time to handle an incoming request. Labels include `http_route`, `http_request_method`, `http_response_status_code`, and `error_type` on failures. Seen routes: `POST /orders` at 200, 400, and 502, and `POST /payments` at 200 and 500. |
+| `http_client_request_duration` | histogram | seconds | order-service | Time for Order's call to Payment. `server_address` is `payment-service` and `server_port` is `8080`. Seen statuses are 200 and 500. |
+
+### PostgreSQL connection pool
+
+The agent records the HikariCP pool. `pool_name` is `postgres:5432/orderdb` on Order and `postgres:5432/paymentdb` on Payment.
+
+| Metric | Type | Unit | Description |
+| --- | --- | --- | --- |
+| `db_client_connections_usage` | gauge | connections | Open connections, split by `state` `idle` or `used`. |
+| `db_client_connections_max` | gauge | connections | Configured maximum pool size. |
+| `db_client_connections_idle_min` | gauge | connections | Configured minimum number of idle connections. |
+| `db_client_connections_pending_requests` | gauge | requests | Threads waiting to borrow a connection. |
+| `db_client_connections_wait_time` | histogram | milliseconds | Time spent waiting to borrow a connection. |
+| `db_client_connections_use_time` | histogram | milliseconds | Time a connection stayed checked out. |
+| `db_client_connections_create_time` | histogram | milliseconds | Time to open a new physical connection. |
+
+SQL statement latency is the Tempo span metric `traces_spanmetrics_latency`, filtered to `INSERT`, `UPDATE`, and `SELECT` span names.
+
+### JVM
+
+Both services report the same JVM metrics. Memory series are split by `jvm_memory_pool_name` and `jvm_memory_type` (`heap` or `non_heap`).
+
+| Metric | Type | Unit | Description |
+| --- | --- | --- | --- |
+| `jvm_memory_used` | gauge | bytes | Bytes currently used in each pool. |
+| `jvm_memory_committed` | gauge | bytes | Bytes committed to each pool. |
+| `jvm_memory_limit` | gauge | bytes | Maximum size of pools that have a fixed limit. G1 Eden and survivor have no series here. |
+| `jvm_memory_used_after_last_gc` | gauge | bytes | Heap still in use after the latest collection, for Eden, survivor, and old generation. |
+| `jvm_gc_duration` | histogram | seconds | Garbage-collection pause time. The seen series is `G1 Young Generation` with action `end of minor GC`. |
+| `jvm_thread_count` | gauge | threads | Live platform threads, by `jvm_thread_state` and `jvm_thread_daemon`. |
+| `jvm_class_count` | gauge | classes | Classes currently loaded. |
+| `jvm_class_loaded` | counter | classes | Classes loaded since the JVM started. |
+| `jvm_class_unloaded` | counter | classes | Classes unloaded since the JVM started. |
+| `jvm_cpu_count` | gauge | processors | Processors available to the JVM. |
+| `jvm_cpu_recent_utilization` | gauge | ratio | Recent process CPU use, from 0 to 1. |
+| `jvm_cpu_time` | counter | seconds | CPU time the process has used since it started. |
+
+### Agent export
+
+These describe the agent's own pipeline. `type` on the exporter counters is `span`, `metric`, or `log`.
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `otlp_exporter_seen` | counter | Items the OTLP exporter accepted, by `type`. |
+| `otlp_exporter_exported` | counter | Items the exporter sent, by `type` and `success`. |
+| `processedSpans` | counter | Spans handled by `BatchSpanProcessor`. `dropped=true` marks spans the processor discarded. |
+| `processedLogs` | counter | Log records handled by `BatchLogRecordProcessor`, with the same `dropped` label. |
+| `queueSize` | gauge | Items waiting in the span processor or the log processor. |
+| `target_info` | gauge | Always `1`. Resource attributes are labels, including `deployment_environment=demo`, `service_version`, the Java runtime, and `telemetry_distro_version` for the agent. |
+
 ## Run
 
 Start the Grafana stack in `../observability` first. It creates the Docker network this file joins.
