@@ -51,6 +51,7 @@ docker compose up -d
 cd ../services
 docker compose up -d --build
 bash place-orders.sh 20
+bash get-orders.sh 20
 ```
 
 | Surface | URL |

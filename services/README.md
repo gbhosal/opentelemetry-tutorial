@@ -218,6 +218,12 @@ Place a batch so the fast, slow, and declined cases all show up:
 bash place-orders.sh 20
 ```
 
+Read that many orders back. The script places the orders, then calls `GET /orders/{id}` for each id:
+
+```bash
+bash get-orders.sh 20
+```
+
 The provisioned dashboard is [Order and Payment](http://localhost:3000/d/otel-order-payment/order-and-payment). The headline counts and latency percentiles are totals since each service started. Charts, logs, and traces follow the time picker, so keep it on the last few hours after a batch of orders. Panels cover request volume and HTTP status, server and client latency, the Order to Payment to PostgreSQL edges, SQL span latency, connection pools, JVM, application logs, and recent `POST /orders` traces.
 
 In Grafana Explore:
