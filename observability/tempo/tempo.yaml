@@ -1,0 +1,78 @@
+# Monolithic Tempo 3. Receives OTLP inside the Docker network and remote-writes
+# span metrics plus service-graph metrics to Mimir.
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+live_store:
+  max_trace_idle: 10s
+  max_block_duration: 5m
+  max_block_bytes: 1000000
+
+backend_scheduler:
+  provider:
+    compaction:
+      compaction:
+        compaction_window: 1h
+        max_block_bytes: 100000000
+        block_retention: 24h
+        compacted_block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /tmp/tempo/wal
+    local:
+      path: /tmp/tempo/blocks
+    pool:
+      max_workers: 100
+      queue_depth: 10000
+
+metrics_generator:
+  processor:
+    span_metrics:
+      dimensions:
+        - http.request.method
+        - url.path
+        - http.response.status_code
+        - service.version
+    service_graphs:
+      dimensions:
+        - http.request.method
+        - url.path
+        - http.response.status_code
+        - service.version
+  registry:
+    collection_interval: 15s
+    external_labels:
+      source: tempo
+  storage:
+    path: /tmp/tempo/generator/wal
+    remote_write:
+      - url: http://mimir:9009/api/v1/push
+        send_exemplars: true
+
+overrides:
+  defaults:
+    compaction:
+      block_retention: 24h
+      compaction_window: 1h
+    metrics_generator:
+      processors: [service-graphs, span-metrics]
+      generate_native_histograms: both
+
+usage_report:
+  reporting_enabled: false

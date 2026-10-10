@@ -1,0 +1,80 @@
+# Local demo backends for metrics (Mimir), logs (Loki), and traces (Tempo).
+# Grafana is pre-wired to all three. This stack does not publish OTLP ports on the
+# host; the OpenTelemetry Collector will join the `observability` network later
+# and export to the internal endpoints documented in README.md.
+
+name: otel-observability
+
+networks:
+  observability:
+    name: observability
+
+services:
+  mimir:
+    image: grafana/mimir:3.1.0
+    command:
+      - -target=all
+      - -config.file=/etc/mimir/mimir.yaml
+      - -ingester.native-histograms-ingestion-enabled=true
+    ports:
+      - "9009:9009"
+    volumes:
+      - ./mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+    networks:
+      - observability
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.2
+    command:
+      - -config.file=/etc/loki/loki.yaml
+      - -pattern-ingester.enabled=true
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+    networks:
+      - observability
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:3.0.2
+    command:
+      - -target=all
+      - -config.file=/etc/tempo/tempo.yaml
+    ports:
+      # Query API for Grafana. OTLP receivers stay on the Docker network only
+      # (tempo:4317 gRPC, tempo:4318 HTTP) so they do not collide with a later Collector.
+      - "3200:3200"
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+    depends_on:
+      - mimir
+    networks:
+      - observability
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.0.2
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      # Mount only datasources so the image keeps its dashboards, alerting,
+      # and plugins provisioning directories.
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - mimir
+      - loki
+      - tempo
+    networks:
+      - observability
+    restart: unless-stopped
