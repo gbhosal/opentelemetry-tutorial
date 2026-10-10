@@ -93,12 +93,22 @@ flowchart LR
     Collector -->|traces| Tempo
     Collector -->|logs| Loki
     Collector -->|metrics| Mimir
+    Collector -.->|metrics, commented| NewRelic[New Relic]
     Grafana --> Tempo
     Grafana --> Loki
     Grafana --> Mimir
 ```
 
 The agent is attached on the JVM command line in each image. Both processes export OTLP HTTP to `otel-collector:4318`. The Collector batches that data and sends traces to Tempo, logs to Loki, and metrics to Mimir.
+
+Each pipeline can list more than one exporter. The metrics pipeline in `otel-collector/config.yaml` includes a commented `otlp_http/newrelic` exporter aimed at `https://otlp.nr-data.net`. With that block commented, metrics stay on Mimir. To send the same metrics to New Relic as well:
+
+1. Export an ingest license key: `export NEW_RELIC_LICENSE_KEY=...`
+2. In `otel-collector/config.yaml`, uncomment `otlp_http/newrelic` and replace the metrics `exporters` line with the commented fan-out line, `exporters: [otlp_http/mimir, otlp_http/newrelic]`.
+3. In `docker-compose.yml`, uncomment the Collector `NEW_RELIC_LICENSE_KEY` environment entry.
+4. Recreate the Collector: `docker compose up -d otel-collector`.
+
+For an EU account, change the endpoint to `https://otlp.eu01.nr-data.net`. The same exporter can be added to the traces or logs pipeline when those signals should go to New Relic too. Mimir continues to receive metrics either way.
 
 A paid order trace looks like this:
 

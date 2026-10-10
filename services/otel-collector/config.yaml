@@ -23,6 +23,14 @@ exporters:
     endpoint: http://loki:3100/otlp
   otlp_http/mimir:
     endpoint: http://mimir:9009/otlp
+  # Second metrics destination. Leave this commented until NEW_RELIC_LICENSE_KEY is set.
+  # The US endpoint is the default. EU: https://otlp.eu01.nr-data.net
+  # JP: https://otlp.jp.nr-data.net
+  # otlp_http/newrelic:
+  #   endpoint: https://otlp.nr-data.net
+  #   headers:
+  #     api-key: ${env:NEW_RELIC_LICENSE_KEY}
+  #   compression: gzip
 
 service:
   pipelines:
@@ -38,3 +46,5 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [otlp_http/mimir]
+      # Fan-out: the same metrics batch is sent to every exporter in the list.
+      # exporters: [otlp_http/mimir, otlp_http/newrelic]

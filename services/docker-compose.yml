@@ -36,6 +36,9 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.162.0
     command: ["--config=/etc/otelcol/config.yaml"]
+    # Uncomment when the New Relic metrics exporter in otel-collector/config.yaml is enabled.
+    # environment:
+    #   NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY}
     ports:
       - "4317:4317"
       - "4318:4318"

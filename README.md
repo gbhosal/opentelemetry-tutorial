@@ -28,10 +28,13 @@ flowchart LR
     Collector --> Tempo
     Collector --> Loki
     Collector --> Mimir
+    Collector -.-> NewRelic[New Relic metrics]
     Grafana --> Tempo
     Grafana --> Loki
     Grafana --> Mimir
 ```
+
+The dashed line is a second metrics destination. It is present in the Collector config and left commented, so this demo still sends metrics only to Mimir. A pipeline `exporters` list can name more than one destination. Uncomment `otlp_http/newrelic` in [services/otel-collector/config.yaml](services/otel-collector/config.yaml) and set `NEW_RELIC_LICENSE_KEY` to send the same metrics to New Relic as well.
 
 Order saves a `PENDING` row, calls Payment, then marks the order `PAID` or `FAILED`. About 7 in 10 payments approve in under 100 ms, about 2 in 10 take up to 2 seconds, and about 1 in 10 are declined.
 
