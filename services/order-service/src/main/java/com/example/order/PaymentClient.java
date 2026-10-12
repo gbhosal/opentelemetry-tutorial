@@ -1,6 +1,8 @@
 package com.example.order;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -13,6 +15,8 @@ import java.util.UUID;
 @Component
 public class PaymentClient {
 
+    private static final Logger log = LoggerFactory.getLogger(PaymentClient.class);
+
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
 
@@ -22,6 +26,7 @@ public class PaymentClient {
     }
 
     public PaymentResponse charge(UUID orderId, BigDecimal amount) {
+        log.trace("posting payment orderId={} amount={}", orderId, amount);
         try {
             PaymentResponse payment = restClient.post()
                     .uri("/payments")
@@ -29,12 +34,18 @@ public class PaymentClient {
                     .retrieve()
                     .body(PaymentResponse.class);
             if (payment == null || payment.id() == null) {
+                log.trace("payment response missing id orderId={} httpStatus=200", orderId);
                 throw new PaymentFailedException(null, 200);
             }
+            log.trace("payment response orderId={} paymentId={} status={}", orderId, payment.id(), payment.status());
             return payment;
         } catch (RestClientResponseException ex) {
-            throw new PaymentFailedException(readPaymentId(ex), ex.getStatusCode().value());
+            UUID paymentId = readPaymentId(ex);
+            log.trace("payment error response orderId={} paymentId={} httpStatus={} body={}",
+                    orderId, paymentId, ex.getStatusCode().value(), ex.getResponseBodyAsString());
+            throw new PaymentFailedException(paymentId, ex.getStatusCode().value());
         } catch (RestClientException ex) {
+            log.trace("payment unreachable orderId={} reason={}", orderId, ex.toString());
             throw new PaymentFailedException(null, 0);
         }
     }
