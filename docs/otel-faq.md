@@ -164,6 +164,165 @@ with tracer.start_as_current_span("charge") as span:
 
 HTTP metric names follow the same semantic conventions when the instrumentation is current, so a server histogram is `http_server_request_duration`. Runtime metrics differ by language. Node reports its event loop and heap. Python reports its process. JVM series such as `jvm_memory_used` come from the Java runtime only.
 
+## Excluding URLs from traces
+
+The Docker health checks in [services/docker-compose.yml](../services/docker-compose.yml) open a TCP socket and send no HTTP request, so they have no URL to exclude. The settings below apply to an HTTP path such as `/actuator/health` or `/health`.
+
+Drop the request in the process when the whole trace should disappear, including JDBC and outbound HTTP spans created while handling it. Drop it in the Collector when every service should follow one rule and the services cannot be reconfigured. The Collector image in this demo is `otel/opentelemetry-collector-contrib:0.162.0`, which includes the filter processor.
+
+A trace sampler and a trace filter leave `http.server.request.duration` in place. That histogram is recorded in the process. Tempo builds `traces_spanmetrics_*` from spans that arrive at Tempo, so a Collector trace filter also keeps those URLs out of the span metrics.
+
+### How does the Java agent exclude URLs?
+
+The agent jar on the service images is 2.31.1. It has no environment variable that lists URLs to skip. From 2.21 the jar includes `RuleBasedRoutingSampler`. From 2.26 that sampler is set with declarative configuration. Agent support for declarative configuration is experimental.
+
+```text
+java -javaagent:/otel/opentelemetry-javaagent.jar -Dotel.config.file=/otel/otel-config.yaml -jar /app/app.jar
+```
+
+With `-Dotel.config.file` set, the SDK reads that file. The `service` detector reads `OTEL_SERVICE_NAME`. Reference `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_EXPORTER_OTLP_ENDPOINT` from the file so the values in `services/docker-compose.yml` still apply. Declare a `meter_provider` and a `logger_provider` the same way, with `/v1/metrics` and `/v1/logs`, for those signals to keep exporting.
+
+`parent_based` consults the parent sampling decision. An incoming request has no parent, so `root` runs. `rule_based_routing` then drops server spans whose `url.path` matches a rule. The unsampled decision is what child spans inherit, so the JDBC and HTTP client spans for that request are dropped with the server span. A top-level `rule_based_routing` sampler, with no `parent_based` wrapper, only considers server spans. Other spans in the same request still export.
+
+`url.path` is the path this agent records, without the query string. Each `pattern` is a regular expression against the whole value. `/actuator.*` covers `/actuator` and `/actuator/health`.
+
+```yaml
+file_format: "1.0"
+
+resource:
+  attributes_list: ${OTEL_RESOURCE_ATTRIBUTES}
+  detection/development:
+    detectors:
+      - service:
+
+tracer_provider:
+  processors:
+    - batch:
+        exporter:
+          otlp_http:
+            endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}/v1/traces
+  sampler:
+    parent_based:
+      root:
+        rule_based_routing:
+          fallback_sampler:
+            always_on:
+          span_kind: SERVER
+          rules:
+            - action: DROP
+              attribute: url.path
+              pattern: /actuator.*
+            - action: DROP
+              attribute: url.path
+              pattern: /(health|ready|live)(/.*)?
+```
+
+The Spring Boot starter uses the same `tracer_provider.sampler` block in its declarative file. Attach the agent or embed the starter, not both.
+
+### How does Node.js exclude URLs?
+
+`@opentelemetry/auto-instrumentations-node/register` reads exporter and resource settings from the environment. It does not read a URL exclude list. `OTEL_NODE_DISABLED_INSTRUMENTATIONS` turns off an instrumentation package. It does not filter paths.
+
+Start the SDK in a module that runs before the application, and pass hooks to the HTTP instrumentation. `ignoreIncomingRequestHook` receives the Node.js incoming message. `request.url` is the path plus the query string. `ignoreOutgoingRequestHook` receives the client request options. `request.path` is that request's path plus query. Return `true` to skip the span.
+
+```javascript
+const { NodeSDK } = require("@opentelemetry/sdk-node");
+const { getNodeAutoInstrumentations } = require("@opentelemetry/auto-instrumentations-node");
+
+const healthPath = /^\/(health|ready|live)(\/|\?|$)/;
+
+const sdk = new NodeSDK({
+  instrumentations: [
+    getNodeAutoInstrumentations({
+      "@opentelemetry/instrumentation-http": {
+        ignoreIncomingRequestHook(request) {
+          return healthPath.test(request.url ?? "");
+        },
+        ignoreOutgoingRequestHook(request) {
+          return healthPath.test(request.path ?? "");
+        },
+      },
+    }),
+  ],
+});
+
+sdk.start();
+```
+
+```bash
+node -r ./tracing.js app.js
+```
+
+Keep the `OTEL_SERVICE_NAME` and `OTEL_EXPORTER_OTLP_*` variables from the zero-code example. Use this entrypoint in place of `NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register`. Loading both starts two SDKs.
+
+### How does Python exclude URLs?
+
+`opentelemetry-instrument` reads comma-separated regular expressions from `OTEL_PYTHON_EXCLUDED_URLS`. Each expression is searched against the URL, so `health` also matches a URL that only contains those letters. Anchor the expression to the path.
+
+```bash
+export OTEL_PYTHON_EXCLUDED_URLS='/(health|ready|live)(/|\?|$)'
+opentelemetry-instrument python app.py
+```
+
+A library-specific variable replaces the general list for that library. It does not add to it. The library names are Django, Falcon, FastAPI, Flask, Pyramid, Requests, Starlette, Tornado, urllib, and urllib3.
+
+```bash
+export OTEL_PYTHON_FASTAPI_EXCLUDED_URLS='/(health|ready|live)(/|\?|$)'
+export OTEL_PYTHON_REQUESTS_EXCLUDED_URLS='/(health|ready|live)(/|\?|$)'
+```
+
+The first variable applies to FastAPI server spans. The second applies to `requests` client spans. Other libraries still use `OTEL_PYTHON_EXCLUDED_URLS` when that variable is set.
+
+### How does the Collector exclude URLs?
+
+The filter processor drops any span that matches one condition. `IsMatch` uses RE2. A dot matches any character, so anchor a path. `url.path` is the server path. A client span records the destination on `url.full`. `http.route` is the route template when the framework set one, such as `/orders/{id}`.
+
+Put the filter on the traces pipeline ahead of `batch`. The processor is alpha. Dropping a server span here leaves its child spans in the export, which the processor documents as orphaned telemetry. Logs for that request still go to Loki. They can carry a trace id that Tempo does not have.
+
+```yaml
+processors:
+  filter/exclude_urls:
+    error_mode: ignore
+    trace_conditions:
+      - 'IsMatch(span.attributes["url.path"], "^/(health|ready|live)(/.*)?$")'
+      - 'IsMatch(span.attributes["url.path"], "^/actuator(/.*)?$")'
+      - 'IsMatch(span.attributes["http.route"], "^/(health|ready|live|actuator)(/.*)?$")'
+      - 'IsMatch(span.attributes["url.full"], "^https?://[^/]+/(health|ready|live|actuator)(/|\\?|$)")'
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/exclude_urls, batch]
+      exporters: [otlp_grpc/tempo]
+```
+
+To drop the in-process HTTP server histogram for those routes, add `metric_conditions` on the same processor and put that processor on the metrics pipeline. The route is the `http.route` datapoint attribute. A missing attribute does not match.
+
+```yaml
+processors:
+  filter/exclude_urls:
+    error_mode: ignore
+    trace_conditions:
+      - 'IsMatch(span.attributes["url.path"], "^/(health|ready|live)(/.*)?$")'
+      - 'IsMatch(span.attributes["url.path"], "^/actuator(/.*)?$")'
+      - 'IsMatch(span.attributes["http.route"], "^/(health|ready|live|actuator)(/.*)?$")'
+      - 'IsMatch(span.attributes["url.full"], "^https?://[^/]+/(health|ready|live|actuator)(/|\\?|$)")'
+    metric_conditions:
+      - 'metric.name == "http.server.request.duration" and IsMatch(datapoint.attributes["http.route"], "^/(health|ready|live|actuator)(/.*)?$")'
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/exclude_urls, batch]
+      exporters: [otlp_grpc/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/exclude_urls, batch]
+      exporters: [otlp_http/mimir]
+```
+
 ## Custom business metrics
 
 ### How do I record a business counter such as orders created or payments recorded?
