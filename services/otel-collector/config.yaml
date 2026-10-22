@@ -13,12 +13,47 @@ processors:
     spike_limit_mib: 64
   batch:
     timeout: 2s
+  # Keep a trace if it has an error span or lasted more than 1s.
+  # Policies are combined with OR. decision_wait must be longer than the
+  # latency threshold so the trace has finished before the decision.
+  # tail_sampling:
+  #   decision_wait: 60s
+  #   num_traces: 10000
+  #   expected_new_traces_per_sec: 10
+  #   policies:
+  #     - name: errors
+  #       type: status_code
+  #       status_code:
+  #         status_codes: [ERROR]
+  #     - name: slow-traces
+  #       type: latency
+  #       latency:
+  #         threshold_ms: 1000
+  # batch/k8s:
+  #   timeout: 2s
 
 exporters:
   otlp_grpc/tempo:
     endpoint: tempo:4317
     tls:
       insecure: true
+  # Tempo distributor on Kubernetes. otlp_http appends /v1/traces when endpoint
+  # is only a base URL, so traces_endpoint is the full ingest URL.
+  otlp_http/tempo-k8s:
+    traces_endpoint: https://tempo.infra.nextgen.oh.shs.com/v1/traces
+    headers:
+      X-Scope-OrgID: stage
+    # Default queue runs 10 senders. Tempo's stage limiter is per distributor,
+    # and those parallel retries were the 429 burst in the log.
+    # sending_queue:
+    #   enabled: true
+    #   num_consumers: 1
+    #   queue_size: 100
+    # retry_on_failure:
+    #   enabled: true
+    #   initial_interval: 5s
+    #   max_interval: 30s
+    #   max_elapsed_time: 120s
   otlp_http/loki:
     endpoint: http://loki:3100/otlp
   otlp_http/mimir:
@@ -34,10 +69,15 @@ exporters:
 
 service:
   pipelines:
-    traces:
+    traces/local:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [otlp_grpc/tempo]
+    traces/k8s:
+      receivers: [otlp]
+      #processors: [memory_limiter, tail_sampling, batch/k8s]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/tempo-k8s]
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
